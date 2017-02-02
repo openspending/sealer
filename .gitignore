@@ -77,3 +77,8 @@ jspm_packages
 # Output of 'npm pack'
 
 # Yarn Integrity file
+
+# IntelliJ
+.idea/
+sealer.iml
+
