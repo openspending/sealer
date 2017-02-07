@@ -1,9 +1,6 @@
 /**
  * Created by larjo on 17/12/2016.
  */
-/**
- * Created by larjo on 15/12/2016.
- */
 let JSZip = require('jszip');
 const crypto = require('crypto');
 let fsp = require('fs-promise');
@@ -15,8 +12,22 @@ let fs = require('fs');
 let phantom = require('phantom');
 let path = require('path');
 let config = require('config');
+let createPhantomPool = require('phantom-pool').default;
 //const console = require('console');
 
+const pool = createPhantomPool({
+    max: 20,
+    min: 5,
+    idleTimeoutMillis: 5 * 60 * 1000,
+    maxUses: 0
+});
+
+process.on('exit', function() {
+    pool.drain().then(() => pool.clear());
+});
+process.on('SIGINT', function () {
+    process.exit();
+});
 
 function waitUntil(asyncTest, timeOutMillis) {
     let maxtimeOutMillis;
@@ -57,24 +68,15 @@ function waitUntil(asyncTest, timeOutMillis) {
 module.exports.loadPage = function (url, width = 1920, height = 1080) {
     let sitepage = null;
 
-    return phantom.create()
+    return pool.use()
         .then((instance) => instance.createPage())
         .then(function (page) {
             sitepage = page;
-            return page.property('viewportSize', {width: width, height: height}).then(function() {
-                return page.open(url);
-
-            });
-
-            /* page.property('onConsoleMessage', function (msg) {
-             console.log(msg);
-             });*/
         })
-        .then(function () {
-            // console.log(status);
-            return Promise.resolve(sitepage);
-
-        });
+        .then(() => sitepage.property('viewportSize', {width, height}))
+        .then(() => sitepage.property('clipRect', {width, height}))
+        .then(() => sitepage.open(url))
+        .then(() => sitepage);
 };
 
 module.exports.loadContent = function (page) {
@@ -98,20 +100,10 @@ module.exports.loadContent = function (page) {
         });
 };
 
-
 module.exports.renderPng = function (page, outputDir, rasterFileName) {
     mkdirp(outputDir);
     let rasterPath = outputDir + '/' + rasterFileName;
-
-    let rasterRender = page.render(rasterPath);
-
-
-
-    return rasterRender.then(function () {
-        return Promise.resolve(page);
-    });
-
-
+    return page.render(rasterPath).then(() => page);
 };
 
 module.exports.renderImages = function (page, outputDir) {
@@ -125,16 +117,13 @@ module.exports.renderImages = function (page, outputDir) {
 
     let metaFile = page.property('url')
         .then(function (url) {
-            return fsp.writeFile(metaPath, jsonFormat({date: new Date(), url: url}));
-
+            return fsp.writeFile(metaPath, jsonFormat({
+                date: new Date(),
+                url: url
+            }));
         });
 
-
-    return Promise.all([pdfRender, rasterRender, metaFile]).then(function () {
-        return Promise.resolve(page);
-    });
-
-
+    return Promise.all([pdfRender, rasterRender, metaFile]).then(() => page);
 };
 module.exports.captureVariables = function (page, outputDir) {
     mkdirp(outputDir);
@@ -161,7 +150,7 @@ module.exports.captureVariables = function (page, outputDir) {
             return fsp.writeFile(aggregatePath, jsonFormat(data));
         }
         else {
-            return Promise.resolve(data);
+            return data;
         }
 
     });
@@ -173,7 +162,6 @@ module.exports.captureVariables = function (page, outputDir) {
 
 };
 module.exports.zipFiles = function (inputDir, outputFileName) {
-
     let zip = new JSZip();
     mkdirp(path.dirname(outputFileName));
 
@@ -188,8 +176,6 @@ module.exports.zipFiles = function (inputDir, outputFileName) {
                             resolve(data);
                         }
                     });
-
-
                 });
                 zip.file(path.basename(file), contentPromise);
             });

@@ -97,6 +97,6 @@ config.timeout = 10000;
 
 config.crypto_algorithm = 'RSA-SHA256';
 
-config.working_directory = os.tmpDir() + '/sealer';
+config.working_directory = os.tmpdir() + '/sealer';
 
 module.exports = config;
