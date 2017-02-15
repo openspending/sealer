@@ -19,7 +19,10 @@ const pool = createPhantomPool({
     max: 20,
     min: 5,
     idleTimeoutMillis: 5 * 60 * 1000,
-    maxUses: 0
+    maxUses: 0,
+    phantomArgs: [
+      ['--ignore-ssl-errors=true', '--disk-cache=true', '--proxy-type=none'], {}
+    ]
 });
 
 process.on('exit', function() {
@@ -75,6 +78,7 @@ module.exports.loadPage = function (url, width = 1920, height = 1080) {
         })
         .then(() => sitepage.property('viewportSize', {width, height}))
         .then(() => sitepage.property('clipRect', {width, height}))
+        .then(() => sitepage.on('onConsoleMessage', (m) => console.log(m)))
         .then(() => sitepage.open(url))
         .then(() => sitepage);
 };
@@ -83,21 +87,19 @@ module.exports.loadContent = function (page) {
     return waitUntil(function () {
         return page.evaluate(function () {
             //noinspection JSUnresolvedFunction
-            return window._babbage_results_aggregate !== undefined || window._babbage_results_facts !== undefined;
 
+            // More precise way to check - this variable is initialized
+            // with `false` on OS Viewer start, and then set to `true` on each
+            // graph's `babbage-ui.ready` (post-render) event
+            if (window.hasOwnProperty('@@sealer_hook')) {
+              return !!window['@@sealer_hook'];
+            }
+
+            // Fallback - allows to support any apps with babbage.ui library
+            return (window._babbage_results_aggregate !== undefined) ||
+                (window._babbage_results_facts !== undefined);
         });
-    })
-    /* .then(function () {
-     return page.evaluate(function () {
-     //noinspection JSUnresolvedFunction
-     //   console.log(document.getElementsByTagName('svg')[0].outerHTML);
-     });
-     })*/
-        .then(function () {
-            return page.property('content');
-        }).then(function () {
-            return Promise.resolve(page);
-        });
+    }).then(() => page);
 };
 
 module.exports.renderPng = function (page, outputDir, rasterFileName) {
@@ -125,6 +127,7 @@ module.exports.renderImages = function (page, outputDir) {
 
     return Promise.all([pdfRender, rasterRender, metaFile]).then(() => page);
 };
+
 module.exports.captureVariables = function (page, outputDir) {
     mkdirp(outputDir);
     let factsPath = outputDir + '/facts.json';
@@ -135,8 +138,7 @@ module.exports.captureVariables = function (page, outputDir) {
     }).then(function (data) {
         if (data !== null) {
             return fsp.writeFile(factsPath, jsonFormat(data));
-        }
-        else {
+        } else {
             return Promise.resolve(data);
         }
     });
@@ -144,23 +146,19 @@ module.exports.captureVariables = function (page, outputDir) {
     let aggregatesDataPromise = page.evaluate(function () {
         //noinspection JSUnresolvedFunction
         return window._babbage_results_aggregate;
-
     }).then(function (data) {
         if (data !== null) {
             return fsp.writeFile(aggregatePath, jsonFormat(data));
-        }
-        else {
+        } else {
             return data;
         }
 
     });
 
-    return Promise.all([factsDataPromise, aggregatesDataPromise]).then(function () {
-        return Promise.resolve(outputDir);
-    });
-
-
+    return Promise.all([factsDataPromise, aggregatesDataPromise])
+      .then(() => outputDir);
 };
+
 module.exports.zipFiles = function (inputDir, outputFileName) {
     let zip = new JSZip();
     mkdirp(path.dirname(outputFileName));
@@ -181,8 +179,7 @@ module.exports.zipFiles = function (inputDir, outputFileName) {
             });
         })
         .then(function () {
-            return zip
-                .generateAsync({type: 'nodebuffer', streamFiles: true});
+            return zip.generateAsync({type: 'nodebuffer', streamFiles: true});
         })
         .then(function (zipFile) {
             return fsp.writeFile(outputFileName, zipFile);
@@ -202,8 +199,7 @@ module.exports.signFile = function (fileName, outputFileName) {
             zip2.file('signature.sha256', signature);
 
             zip2.file('package.zip', contents);
-            return zip2
-                .generateAsync({type: 'nodebuffer', streamFiles: true})
+            return zip2.generateAsync({type: 'nodebuffer', streamFiles: true})
                 .then(function (zipFile) {
                     return fsp.writeFile((outputFileName), zipFile);
                 });
@@ -211,7 +207,6 @@ module.exports.signFile = function (fileName, outputFileName) {
 };
 
 module.exports.verifySignedPackage = function (fileName) {
-
     return fsp.readFile(fileName)
         .then(function (data) {
             let zip = new JSZip();
@@ -221,7 +216,6 @@ module.exports.verifySignedPackage = function (fileName) {
             let packagePromise = zip.file('package.zip').async('nodebuffer');
             let signaturePromise = zip.file('signature.sha256').async('text');
             return Promise.all([packagePromise, signaturePromise]);
-
         })
         .then(function (results) {
             let contents = results[0];
@@ -233,8 +227,7 @@ module.exports.verifySignedPackage = function (fileName) {
 
             const public_key = config.get('public_key').replace(/\\n/g, '\n');
             let result = verify.verify(public_key, signature, 'hex');
-            //console.log(result);
-            return Promise.resolve(result);
+            return result;
         });
 };
 
@@ -245,19 +238,14 @@ module.exports.index = function (url) {
     let package_path = working_dir + '/' + 'package.zip';
     let signed_path = working_dir + '/' + hash + '.zip';
 
-    let promise = this.loadPage(url)
+    return this.loadPage(url)
         .then((page) => this.loadContent(page))
         .then((page) => this.renderImages(page, working_dir))
         .then((page) => this.captureVariables(page, working_dir))
         .then((directoryPath) => this.zipFiles(directoryPath, package_path))
         .then(() => this.signFile(package_path, signed_path))
-        .then(() => this.verifySignedPackage(signed_path));
-
-    return promise.then(function () {
-        return Promise.resolve(signed_path);
-    });
-
-
+        .then(() => this.verifySignedPackage(signed_path))
+        .then(() => signed_path);
 };
 
 module.exports.sign = function (url, width = 1920, height = 1080) {
@@ -267,18 +255,14 @@ module.exports.sign = function (url, width = 1920, height = 1080) {
     let package_path = working_dir + '/' + 'package.zip';
     let signed_path = working_dir + '/' + hash + '.zip';
 
-    let promise = this.loadPage(url, width, height)
+    return this.loadPage(url, width, height)
         .then((page) => this.loadContent(page))
         .then((page) => this.renderImages(page, working_dir))
         .then((page) => this.captureVariables(page, working_dir))
         .then((directoryPath) => this.zipFiles(directoryPath, package_path))
-        .then(() => this.signFile(package_path, signed_path));
-
-    return promise.then(function () {
-        return Promise.resolve(signed_path);
-    });
+        .then(() => this.signFile(package_path, signed_path))
+        .then(() => signed_path);
 };
-
 
 module.exports.store = function (url, width = 1920, height = 1080) {
     let hash = md5(url + new Date());
@@ -287,15 +271,11 @@ module.exports.store = function (url, width = 1920, height = 1080) {
     let rasterFileName = hash + '.png';
     let rasterPath = working_dir + '/' + rasterFileName;
 
-    let promise = this.loadPage(url, width, height)
+    return this.loadPage(url, width, height)
         .then((page) => this.loadContent(page))
-        .then((page) => this.renderPng(page, working_dir, rasterFileName));
-
-    return promise.then(function () {
-        return Promise.resolve(rasterPath);
-    });
+        .then((page) => this.renderPng(page, working_dir, rasterFileName))
+        .then(() => rasterPath);
 };
-
 
 module.exports.verify = function (file) {
     return this.verifySignedPackage(file);
